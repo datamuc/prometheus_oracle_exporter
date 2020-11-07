@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+	"fmt"
 
 	_ "github.com/mattn/go-oci8"
 	"github.com/prometheus/client_golang/prometheus"
@@ -80,7 +81,7 @@ var (
                             <a href='` + *metricPath + `?lobbytes=true'>Metrics with lobbytes</a></p>
                             <a href='` + *metricPath + `?recovery=true'>Metrics with recovery</a></p>
                           </body>
-                          </html>`)
+						  </html>`)
 )
 
 // NewExporter returns a new Oracle DB exporter for the provided DSN.
@@ -236,7 +237,7 @@ func NewExporter() *Exporter {
 }
 
 // ScrapeCustomQueries collects metrics from self defined queries from configuration file.
-func (e *Exporter) ScrapeCustomQueries() {
+func (e *Exporter) ScrapeCustomQueries(pNoRownum bool) {
 	var (
 		rows *sql.Rows
 		err  error
@@ -246,6 +247,8 @@ func (e *Exporter) ScrapeCustomQueries() {
 			for _, query := range conn.Queries {
 				rows, err = conn.db.Query(query.Sql)
 				if err != nil {
+					log.Error("Error in Query '" +  query.Sql + "': ")
+					fmt.Println(err)
 					continue
 				}
 
@@ -270,13 +273,14 @@ func (e *Exporter) ScrapeCustomQueries() {
 						metricColumnIndex := -1
 						for i, col := range cols {
 							if cleanName(metric) == cleanName(col) {
+								log.Debugln("Metric column '" + metric + "' found")
 								metricColumnIndex = i
 								break
 							}
 						}
 
 						if metricColumnIndex == -1 {
-							//log.Infoln("Metric column '" + metric + "' not found")
+							log.Errorln("Metric column '" + metric + "' not found")
 							continue MetricLoop
 						}
 
@@ -291,13 +295,14 @@ func (e *Exporter) ScrapeCustomQueries() {
 								labelColumnIndex := -1
 								for i, col := range cols {
 									if cleanName(label) == cleanName(col) {
+										log.Debugln("Label column '" + label + "' found")
 										labelColumnIndex = i
 										break
 									}
 								}
 
 								if labelColumnIndex == -1 {
-									//log.Infoln("Label column not found")
+									log.Errorln("Label column '" + label + "' not found")
 									break LebelLoop
 								}
 
