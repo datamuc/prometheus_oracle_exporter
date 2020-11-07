@@ -66,6 +66,7 @@ var (
 	pTabBytes     = flag.Bool("tablebytes", false, "Expose Table size (CAN TAKE VERY LONG)")
 	pIndBytes     = flag.Bool("indexbytes", false, "Expose Index size for any Table (CAN TAKE VERY LONG)")
 	pLobBytes     = flag.Bool("lobbytes", false, "Expose Lobs size for any Table (CAN TAKE VERY LONG)")
+    pNoRownum     = flag.Bool("norownum", false, "omit rownum label in custom metrics")
 	pRecovery     = flag.Bool("recovery", false, "Expose Recovery percentage usage of FRA (CAN TAKE VERY LONG)")
 	configFile    = flag.String("configfile", "oracle.conf", "ConfigurationFile in YAML format.")
 	logFile       = flag.String("logfile", "exporter.log", "Logfile for parsed Oracle Alerts.")
@@ -225,12 +226,22 @@ func NewExporter() *Exporter {
 			for _, label := range query.Labels {
 				labels = append(labels, cleanName(label))
 			}
-			e.custom[query.Name] = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-				Namespace: namespace,
-				Name:      "custom_" + cleanName(query.Name),
-				Help:      query.Help,
-			}, append(labels, "metric", "database", "dbinstance", "rownum"))
-		}
+			if  *pNoRownum == false {
+				e.custom[query.Name] = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+					Namespace: namespace,
+					Name:      "custom_" + cleanName(query.Name),
+					Help:      query.Help,
+				},
+				append(labels, "metric", "database", "dbinstance", "rownum"))
+			} else {
+				e.custom[query.Name] = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+					Namespace: namespace,
+					Name:      "custom_" + cleanName(query.Name),
+					Help:      query.Help,
+				},
+				append(labels, "metric", "database", "dbinstance"))
+			   }
+		 }
 	}
 
 	return &e
@@ -289,7 +300,9 @@ func (e *Exporter) ScrapeCustomQueries(pNoRownum bool) {
 							promLabels["database"] = conn.Database
 							promLabels["dbinstance"] = conn.Instance
 							promLabels["metric"] = metric
-							promLabels["rownum"] = strconv.Itoa(rownum)
+							if pNoRownum == false {
+								promLabels["rownum"] = strconv.Itoa(rownum)
+							}
 						LebelLoop:
 							for _, label := range query.Labels {
 								labelColumnIndex := -1
@@ -1024,7 +1037,7 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 		e.asmspace.Collect(ch)
 	}
 
-	e.ScrapeCustomQueries()
+	e.ScrapeCustomQueries(*pNoRownum)
 	for _, metric := range e.custom {
 		metric.Collect(ch)
 	}

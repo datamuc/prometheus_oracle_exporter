@@ -75,6 +75,7 @@ oracledb_custom_sample1{database="mydb",dbinstance="mydb",metric="column2",label
 oracledb_custom_sample1{database="mydb",dbinstance="mydb",metric="column2",label_column="some value 2",rownum="2"} 2
 ```
 
+Note: With option `-norownum` the label rownum is omitted, as this can vary over time.
 
 # Prometheus Configuration
 ```
@@ -146,6 +147,8 @@ Usage of ./prometheus_oracle_exporter:
     Expose Lobs size for any Table (CAN TAKE VERY LONG)
   -logfile string
     Logfile for parsed Oracle Alerts. (default "exporter.log")
+  -norownum
+        supress rownum label in custom metrics
   -recovery
     Expose Recovery percentage usage of FRA (CAN TAKE VERY LONG)
   -tablebytes
