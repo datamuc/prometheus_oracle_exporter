@@ -75,7 +75,7 @@ oracledb_custom_sample1{database="mydb",dbinstance="mydb",metric="column2",label
 oracledb_custom_sample1{database="mydb",dbinstance="mydb",metric="column2",label_column="some value 2",rownum="2"} 2
 ```
 
-Note: With option `-norownum` the label rownum is omitted, as this can vary over time.
+Note: With option `-norownum` the label rownum is omitted, as this can vary over time and without explicit sorts.
 
 # Prometheus Configuration
 ```
@@ -148,7 +148,7 @@ Usage of ./prometheus_oracle_exporter:
   -logfile string
     Logfile for parsed Oracle Alerts. (default "exporter.log")
   -norownum
-        supress rownum label in custom metrics
+    supress rownum label in custom metrics
   -recovery
     Expose Recovery percentage usage of FRA (CAN TAKE VERY LONG)
   -tablebytes
@@ -159,7 +159,17 @@ Usage of ./prometheus_oracle_exporter:
     Address to listen on for web interface and telemetry. (default ":9161")
   -web.telemetry-path string
     Path under which to expose metrics. (default "/metrics")
+  -winsvc string
+    install, uninstall, start, stop a Windows service
 ```
+
+### Windows Service
+
+The binary can be installed as a Windows service by supplying the `-winsvc install` arg.
+All other arguments passed along with `-winsvc install` will be added to the service startup 
+and can only be changed by uninstalling/installing it again (or modifying the Windows registry directly).
+
+Note: the path to the DDLs of the oracle client or instant client must be in the system PATH for exectution.
 
 # Grafana
 In The folder [Grafana](https://grafana.com) are examples of my used Dashboards
@@ -178,3 +188,64 @@ In The folder [Grafana](https://grafana.com) are examples of my used Dashboards
 
 ## Errors
 ![Errors](grafana/errors.png)
+
+
+
+# Compilation
+
+The go compilation is not straight forward, as the go oracle package installation needs additional software and configuration.
+
+## Compilation of mattn/go-oci8 on Linux
+
+ go get github.com/mattn/go-oci8
+
+ download and extract oracle client or instant client (not light!), e.g:
+ - instantclient-basic-linux.x64-19.8.0.0.0dbru.zip
+ - instantclient-sdk-linux.x64-19.8.0.0.0dbru.zip
+
+Edit $GOPATH/src/github.com/mattn/go-oci8/oci8.cp
+to set the paths to your oracle 
+
+## Compilation on Windows
+
+ Thanks to https://gist.github.com/mnadel/8678269 for howto compile go-oci8 on windows!
+
+ install go e.g 1.15.4 
+
+ install tdm gcc from https://github.com/jmeubank/tdm-gcc/releases/download/v9.2.0-tdm64-1/tdm64-gcc-9.2.0.exe
+
+ and add it to the path
+```
+set PATH=%PATH%;D:\go\bin;D:\TDM-GCC-64\bin
+```
+
+ download and extract oracle client or instant client (not light!), e.g:
+ -  instantclient-basic-windows.x64-19.8.0.0.0dbru.zip
+ -  instantclient-sdk-windows.x64-19.8.0.0.0dbru.zip
+
+ install pkc-config lite
+  https://sourceforge.net/projects/pkgconfiglite/files/0.28-1/pkg-config-lite-0.28-1_bin-win32.zip/download
+
+```
+ go get github.com/mattn/go-oci8
+```
+ build fails due to missing go-oci8 config:
+
+edit oci8.cp  set paths to Oracle instant client
+```
+set PKG_CONFIG_PATH=%cd%
+copy %GOPATH%\src\github.com\mattn\go-oci8\oci8.cp .
+```
+And edit file.
+
+
+If there are still header problems with pkg_config additionally set:
+```
+set CGO_LDFLAGS=-L D:/oracle_instantclient_19_8/sdk/lib/msvc -loci
+set CGO_CFLAGS=-I D:/oracle_instantclient_19_8/sdk/include
+```
+
+
+```
+go get github.com/ulikl/prometheus_oracle_exporter
+```

@@ -1103,6 +1103,9 @@ func (e *Exporter) Handler(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	flag.Parse()
+
+	manageService()
+	
 	log.Infoln("Starting Prometheus Oracle exporter " + Version)
 	if loadConfig() {
 		log.Infoln("Config loaded: ", *configFile)
