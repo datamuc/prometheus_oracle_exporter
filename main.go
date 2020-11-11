@@ -9,6 +9,8 @@ import (
 	"time"
 	"fmt"
 
+    //"io/ioutil"
+    //"gopkg.in/yaml.v2"
 	_ "github.com/mattn/go-oci8"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -23,9 +25,9 @@ const (
 
 // Exporter collects Oracle DB metrics. It implements prometheus.Collector.
 type Exporter struct {
-	duration, error prometheus.Gauge
-	totalScrapes    prometheus.Counter
-	scrapeErrors    *prometheus.CounterVec
+    duration, error *prometheus.GaugeVec
+    totalScrapes    *prometheus.CounterVec
+    scrapeErrors    *prometheus.CounterVec
 	session         *prometheus.GaugeVec
 	sysstat         *prometheus.GaugeVec
 	waitclass       *prometheus.GaugeVec
@@ -43,6 +45,7 @@ type Exporter struct {
 	parameter       *prometheus.GaugeVec
 	//query           *prometheus.GaugeVec
 	asmspace   *prometheus.GaugeVec
+    config          Config
 	tablerows  *prometheus.GaugeVec
 	tablebytes *prometheus.GaugeVec
 	indexbytes *prometheus.GaugeVec
@@ -58,7 +61,7 @@ type Exporter struct {
 
 var (
 	// Version will be set at build time.
-	Version       = "1.1.5"
+	Version       = "1.1.6"
 	listenAddress = flag.String("web.listen-address", ":9161", "Address to listen on for web interface and telemetry.")
 	metricPath    = flag.String("web.telemetry-path", "/metrics", "Path under which to expose metrics.")
 	pMetrics      = flag.Bool("defaultmetrics", true, "Expose standard metrics")
@@ -83,37 +86,41 @@ var (
                             <a href='` + *metricPath + `?recovery=true'>Metrics with recovery</a></p>
                           </body>
 						  </html>`)
+
+  //configs Configs
+  metricsExporter *Exporter
+  handlers = map[string]http.Handler {}
 )
 
 // NewExporter returns a new Oracle DB exporter for the provided DSN.
 func NewExporter() *Exporter {
-	e := Exporter{
-		duration: prometheus.NewGauge(prometheus.GaugeOpts{
-			Namespace: namespace,
-			Subsystem: exporter,
-			Name:      "last_scrape_duration_seconds",
-			Help:      "Duration of the last scrape of metrics from Oracle DB.",
-		}),
-		totalScrapes: prometheus.NewCounter(prometheus.CounterOpts{
-			Namespace: namespace,
-			Subsystem: exporter,
-			Name:      "scrapes_total",
-			Help:      "Total number of times Oracle DB was scraped for metrics.",
-		}),
-		scrapeErrors: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Namespace: namespace,
-			Subsystem: exporter,
-			Name:      "scrape_errors_total",
-			Help:      "Total number of times an error occured scraping a Oracle database.",
-		}, []string{"collector"}),
-		error: prometheus.NewGauge(prometheus.GaugeOpts{
-			Namespace: namespace,
-			Subsystem: exporter,
-			Name:      "last_scrape_error",
-			Help:      "Whether the last scrape of metrics from Oracle DB resulted in an error (1 for error, 0 for success).",
-		}),
-		sysmetric: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Namespace: namespace,
+  e := Exporter{
+    duration: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+      Namespace: namespace,
+      Subsystem: exporter,
+      Name:      "last_scrape_duration_seconds",
+      Help:      "Duration of the last scrape of metrics from Oracle DB.",
+    }, []string{"database","dbinstance"}),
+    totalScrapes: prometheus.NewCounterVec(prometheus.CounterOpts{
+      Namespace: namespace,
+      Subsystem: exporter,
+      Name:      "scrapes_total",
+      Help:      "Total number of times Oracle DB was scraped for metrics.",
+    }, []string{"database","dbinstance"}),
+    scrapeErrors: prometheus.NewCounterVec(prometheus.CounterOpts{
+      Namespace: namespace,
+      Subsystem: exporter,
+      Name:      "scrape_errors_total",
+      Help:      "Total number of times an error occured scraping a Oracle database.",
+    }, []string{"database","dbinstance"}),
+    error: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+      Namespace: namespace,
+      Subsystem: exporter,
+      Name:      "last_scrape_error",
+      Help:      "Whether the last scrape of metrics from Oracle DB resulted in an error (1 for error, 0 for success).",
+    },[]string{"database","dbinstance"}),
+    sysmetric: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+      Namespace: namespace,
 			Name:      "sysmetric",
 			Help:      "Gauge metric with read/write pysical IOPs/bytes (v$sysmetric).",
 		}, []string{"database", "dbinstance", "type"}),
@@ -387,52 +394,57 @@ func (e *Exporter) ScrapeParameter() {
 	var (
 		rows *sql.Rows
 		err  error
-	)
-	for _, conn := range config.Cfgs {
-		//num  metric_name
-		//43  sessions
-		if conn.db != nil {
-			rows, err = conn.db.Query(`select name,value from v$parameter WHERE num=43`)
-			if err != nil {
-				continue
-			}
-			defer rows.Close()
-			for rows.Next() {
-				var name string
-				var value float64
-				if err := rows.Scan(&name, &value); err != nil {
-					break
-				}
-				name = cleanName(name)
-				e.parameter.WithLabelValues(conn.Database, conn.Instance, name).Set(value)
-			}
-		}
-	}
+  )
+
+  db := e.config.db
+
+  //num  metric_name
+  //43  sessions
+  if db != nil {
+    rows, err = db.Query(`select name,value from v$parameter WHERE num=43`)
+    if err != nil {
+      return
+    }
+
+    defer rows.Close()
+
+    for rows.Next() {
+      var name string
+      var value float64
+      if err := rows.Scan(&name,&value); err != nil {
+        break
+      }
+      name = cleanName(name)
+      e.parameter.WithLabelValues(e.config.Database,e.config.Instance,name).Set(value)
+    }
+  }
 }
 
 // ScrapeServices collects metrics from the v$active_services view.
 func (e *Exporter) ScrapeServices() {
 	var (
 		rows *sql.Rows
-		err  error
-	)
-	for _, conn := range config.Cfgs {
-		if conn.db != nil {
-			rows, err = conn.db.Query(`select name from v$active_services`)
-			if err != nil {
-				continue
-			}
-			defer rows.Close()
-			for rows.Next() {
-				var name string
-				if err := rows.Scan(&name); err != nil {
-					break
-				}
-				name = cleanName(name)
-				e.services.WithLabelValues(conn.Database, conn.Instance, name).Set(1)
-			}
-		}
-	}
+    err  error
+  )
+
+  config := e.config
+  db := config.db
+
+  if db != nil {
+    rows, err = db.Query(`select name from v$active_services`)
+    if err != nil {
+      return
+    }
+    defer rows.Close()
+    for rows.Next() {
+      var name string
+      if err := rows.Scan(&name); err != nil {
+        break
+      }
+      name = cleanName(name)
+      e.services.WithLabelValues(config.Database,config.Instance,name).Set(1)
+    }
+  }
 }
 
 // ScrapeCache collects session metrics from the v$sysmetrics view.
@@ -440,32 +452,35 @@ func (e *Exporter) ScrapeCache() {
 	var (
 		rows *sql.Rows
 		err  error
-	)
-	for _, conn := range config.Cfgs {
-		//metric_id  metric_name
-		//2000    Buffer Cache Hit Ratio
-		//2050    Cursor Cache Hit Ratio
-		//2112    Library Cache Hit Ratio
-		//2110    Row Cache Hit Ratio
-		if conn.db != nil {
-			rows, err = conn.db.Query(`select metric_name,value
-                                 from v$sysmetric
-                                 where group_id=2 and metric_id in (2000,2050,2112,2110)`)
-			if err != nil {
-				continue
-			}
-			defer rows.Close()
-			for rows.Next() {
-				var name string
-				var value float64
-				if err := rows.Scan(&name, &value); err != nil {
-					break
-				}
-				name = cleanName(name)
-				e.cache.WithLabelValues(conn.Database, conn.Instance, name).Set(value)
-			}
-		}
-	}
+  )
+
+  config := e.config
+  db := config.db
+
+  //metric_id  metric_name
+  //2000    Buffer Cache Hit Ratio
+  //2050    Cursor Cache Hit Ratio
+  //2112    Library Cache Hit Ratio
+  //2110    Row Cache Hit Ratio
+
+  if db != nil {
+    rows, err = db.Query(`select metric_name,value
+                               from v$sysmetric
+                               where group_id=2 and metric_id in (2000,2050,2112,2110)`)
+    if err != nil {
+      return
+    }
+    defer rows.Close()
+    for rows.Next() {
+      var name string
+      var value float64
+      if err := rows.Scan(&name, &value); err != nil {
+        break
+      }
+      name = cleanName(name)
+      e.cache.WithLabelValues(config.Database,config.Instance,name).Set(value)
+    }
+  }
 }
 
 // ScrapeRecovery collects tablespace metrics
@@ -473,50 +488,54 @@ func (e *Exporter) ScrapeRedo() {
 	var (
 		rows *sql.Rows
 		err  error
-	)
-	for _, conn := range config.Cfgs {
-		if conn.db != nil {
-			rows, err = conn.db.Query(`select count(*) from v$log_history where first_time > sysdate - 1/24/12`)
-			if err != nil {
-				continue
-			}
-			defer rows.Close()
-			for rows.Next() {
-				var value float64
-				if err := rows.Scan(&value); err != nil {
-					break
-				}
-				e.redo.WithLabelValues(conn.Database, conn.Instance).Set(value)
-			}
-		}
-	}
+  )
+
+  config := e.config
+  db := config.db
+
+  if db != nil {
+    rows, err = db.Query(`select count(*) from v$log_history where first_time > sysdate - 1/24/12`)
+    if err != nil {
+      return
+    }
+    defer rows.Close()
+    for rows.Next() {
+      var value float64
+      if err := rows.Scan(&value); err != nil {
+        break
+      }
+      e.redo.WithLabelValues(config.Database,config.Instance).Set(value)
+    }
+  }
 }
 
 // ScrapeRecovery collects tablespace metrics
 func (e *Exporter) ScrapeRecovery() {
-	var (
-		rows *sql.Rows
-		err  error
-	)
-	for _, conn := range config.Cfgs {
-		if conn.db != nil {
-			rows, err = conn.db.Query(`SELECT sum(percent_space_used) , sum(percent_space_reclaimable)
-                                 from V$FLASH_RECOVERY_AREA_USAGE`)
-			if err != nil {
-				continue
-			}
-			defer rows.Close()
-			for rows.Next() {
-				var used float64
-				var recl float64
-				if err := rows.Scan(&used, &recl); err != nil {
-					break
-				}
-				e.recovery.WithLabelValues(conn.Database, conn.Instance, "percent_space_used").Set(used)
-				e.recovery.WithLabelValues(conn.Database, conn.Instance, "percent_space_reclaimable").Set(recl)
-			}
-		}
-	}
+  var (
+    rows *sql.Rows
+    err  error
+  )
+
+  config := e.config
+  db := config.db
+
+  if db != nil {
+    rows, err = db.Query(`SELECT sum(percent_space_used) , sum(percent_space_reclaimable)
+                             from V$FLASH_RECOVERY_AREA_USAGE`)
+    if err != nil {
+      return
+    }
+    defer rows.Close()
+    for rows.Next() {
+      var used float64
+      var recl float64
+      if err := rows.Scan(&used, &recl); err != nil {
+        break
+      }
+      e.recovery.WithLabelValues(config.Database,config.Instance,"percent_space_used").Set(used)
+      e.recovery.WithLabelValues(config.Database,config.Instance,"percent_space_reclaimable").Set(recl)
+    }
+  }
 }
 
 // ScrapeTablespaces collects tablespace metrics
@@ -524,27 +543,29 @@ func (e *Exporter) ScrapeInterconnect() {
 	var (
 		rows *sql.Rows
 		err  error
-	)
-	for _, conn := range config.Cfgs {
-		if conn.db != nil {
-			rows, err = conn.db.Query(`SELECT name, value
-                                 FROM V$SYSSTAT
-                                 WHERE name in ('gc cr blocks served','gc cr blocks flushed','gc cr blocks received')`)
-			if err != nil {
-				continue
-			}
-			defer rows.Close()
-			for rows.Next() {
-				var name string
-				var value float64
-				if err := rows.Scan(&name, &value); err != nil {
-					break
-				}
-				name = cleanName(name)
-				e.interconnect.WithLabelValues(conn.Database, conn.Instance, name).Set(value)
-			}
-		}
-	}
+  )
+
+  config := e.config
+  db := config.db
+
+  if db != nil {
+    rows, err = db.Query(`SELECT name, value
+                               FROM V$SYSSTAT
+                               WHERE name in ('gc cr blocks served','gc cr blocks flushed','gc cr blocks received')`)
+    if err != nil {
+      return
+    }
+    defer rows.Close()
+    for rows.Next() {
+      var name string
+      var value float64
+      if err := rows.Scan(&name, &value); err != nil {
+        break
+      }
+      name = cleanName(name)
+      e.interconnect.WithLabelValues(config.Database,config.Instance,name).Set(value)
+    }
+  }
 }
 
 // ScrapeAsmspace collects ASM metrics
@@ -552,31 +573,33 @@ func (e *Exporter) ScrapeAsmspace() {
 	var (
 		rows *sql.Rows
 		err  error
-	)
-	for _, conn := range config.Cfgs {
-		if conn.db != nil {
-			rows, err = conn.db.Query(`SELECT g.name, sum(d.total_mb), sum(d.free_mb)
-                                  FROM v$asm_disk_stat d, v$asm_diskgroup_stat g
-                                 WHERE  d.group_number = g.group_number
-                                  AND  d.header_status = 'MEMBER'
-                                 GROUP by  g.name,  g.group_number`)
-			if err != nil {
-				continue
-			}
-			defer rows.Close()
-			for rows.Next() {
-				var name string
-				var tsize float64
-				var tfree float64
-				if err := rows.Scan(&name, &tsize, &tfree); err != nil {
-					break
-				}
-				e.asmspace.WithLabelValues(conn.Database, conn.Instance, "total", name).Set(tsize)
-				e.asmspace.WithLabelValues(conn.Database, conn.Instance, "free", name).Set(tfree)
-				e.asmspace.WithLabelValues(conn.Database, conn.Instance, "used", name).Set(tsize - tfree)
-			}
-		}
-	}
+  )
+
+  config := e.config
+  db := config.db
+
+  if db != nil {
+    rows, err = db.Query(`SELECT g.name, sum(d.total_mb), sum(d.free_mb)
+                                FROM v$asm_disk d, v$asm_diskgroup g
+                               WHERE  d.group_number = g.group_number
+                                AND  d.header_status = 'MEMBER'
+                               GROUP by  g.name,  g.group_number`)
+    if err != nil {
+      return
+    }
+    defer rows.Close()
+    for rows.Next() {
+      var name string
+      var tsize float64
+      var tfree float64
+      if err := rows.Scan(&name, &tsize, &tfree); err != nil {
+        break
+      }
+      e.asmspace.WithLabelValues(config.Database,config.Instance,"total",name).Set(tsize)
+      e.asmspace.WithLabelValues(config.Database,config.Instance,"free",name).Set(tfree)
+      e.asmspace.WithLabelValues(config.Database,config.Instance,"used",name).Set(tsize-tfree)
+    }
+  }
 }
 
 // ScrapeTablespaces collects tablespace metrics
@@ -584,42 +607,44 @@ func (e *Exporter) ScrapeTablespace() {
 	var (
 		rows *sql.Rows
 		err  error
-	)
-	for _, conn := range config.Cfgs {
-		if conn.db != nil {
-			rows, err = conn.db.Query(`WITH
-                                   getsize AS (SELECT tablespace_name, max(autoextensible) autoextensible, SUM(bytes) tsize
-                                               FROM dba_data_files GROUP BY tablespace_name),
-                                   getfree as (SELECT tablespace_name, contents, SUM(blocks*block_size) tfree
-                                               FROM DBA_LMT_FREE_SPACE a, v$tablespace b, dba_tablespaces c
-                                               WHERE a.TABLESPACE_ID= b.ts# and b.name=c.tablespace_name
-                                               GROUP BY tablespace_name,contents)
-                                 SELECT a.tablespace_name, b.contents, a.tsize,  b.tfree, a.autoextensible autoextend
-                                 FROM GETSIZE a, GETFREE b
-                                 WHERE a.tablespace_name = b.tablespace_name
-                                 UNION
-                                 SELECT tablespace_name, 'TEMPORARY', sum(tablespace_size), sum(free_space), 'NO'
-                                 FROM dba_temp_free_space
-                                 GROUP BY tablespace_name`)
-			if err != nil {
-				continue
-			}
-			defer rows.Close()
-			for rows.Next() {
-				var name string
-				var contents string
-				var tsize float64
-				var tfree float64
-				var auto string
-				if err := rows.Scan(&name, &contents, &tsize, &tfree, &auto); err != nil {
-					break
-				}
-				e.tablespace.WithLabelValues(conn.Database, conn.Instance, "total", name, contents, auto).Set(tsize)
-				e.tablespace.WithLabelValues(conn.Database, conn.Instance, "free", name, contents, auto).Set(tfree)
-				e.tablespace.WithLabelValues(conn.Database, conn.Instance, "used", name, contents, auto).Set(tsize - tfree)
-			}
-		}
-	}
+  )
+
+  config := e.config
+  db := config.db
+
+  if db != nil {
+    rows, err = db.Query(`WITH
+                                 getsize AS (SELECT tablespace_name, autoextensible, SUM(bytes) tsize
+                                             FROM dba_data_files GROUP BY tablespace_name, autoextensible),
+                                 getfree as (SELECT tablespace_name, contents, SUM(blocks*block_size) tfree
+                                             FROM DBA_LMT_FREE_SPACE a, v$tablespace b, dba_tablespaces c
+                                             WHERE a.TABLESPACE_ID= b.ts# and b.name=c.tablespace_name
+                                             GROUP BY tablespace_name,contents)
+                               SELECT a.tablespace_name, b.contents, a.tsize,  b.tfree, a.autoextensible autoextend
+                               FROM GETSIZE a, GETFREE b
+                               WHERE a.tablespace_name = b.tablespace_name
+                               UNION
+                               SELECT tablespace_name, 'TEMPORARY', sum(tablespace_size), sum(free_space), 'NO'
+                               FROM dba_temp_free_space
+                               GROUP BY tablespace_name`)
+    if err != nil {
+      return
+    }
+    defer rows.Close()
+    for rows.Next() {
+      var name string
+      var contents string
+      var tsize float64
+      var tfree float64
+      var auto string
+      if err := rows.Scan(&name, &contents, &tsize, &tfree, &auto); err != nil {
+        break
+      }
+      e.tablespace.WithLabelValues(config.Database,config.Instance,"total",name,contents,auto).Set(tsize)
+      e.tablespace.WithLabelValues(config.Database,config.Instance,"free",name,contents,auto).Set(tfree)
+      e.tablespace.WithLabelValues(config.Database,config.Instance,"used",name,contents,auto).Set(tsize-tfree)
+    }
+  }
 }
 
 // ScrapeSessions collects session metrics from the v$session view.
@@ -627,41 +652,51 @@ func (e *Exporter) ScrapeSession() {
 	var (
 		rows *sql.Rows
 		err  error
-	)
-	for _, conn := range config.Cfgs {
-		if conn.db != nil {
-			rows, err = conn.db.Query(`SELECT decode(username,NULL,'SYSTEM','SYS','SYSTEM','USER'), status,count(*)
-                                 FROM v$session
-                                 GROUP BY decode(username,NULL,'SYSTEM','SYS','SYSTEM','USER'),status`)
-			if err != nil {
-				continue
-			}
-			defer rows.Close()
-			for rows.Next() {
-				var user string
-				var status string
-				var value float64
-				if err := rows.Scan(&user, &status, &value); err != nil {
-					break
-				}
-				e.session.WithLabelValues(conn.Database, conn.Instance, user, status).Set(value)
-			}
-		}
-	}
+  )
+
+  config := e.config
+  db := config.db
+
+  if db != nil {
+    rows, err = db.Query(`SELECT decode(username,NULL,'SYSTEM','SYS','SYSTEM','USER'), status,count(*)
+                               FROM v$session
+                               GROUP BY decode(username,NULL,'SYSTEM','SYS','SYSTEM','USER'),status`)
+    if err != nil {
+      return
+    }
+    defer rows.Close()
+    for rows.Next() {
+      var user string
+      var status string
+      var value float64
+      if err := rows.Scan(&user, &status, &value); err != nil {
+        break
+      }
+      e.session.WithLabelValues(config.Database,config.Instance,user,status).Set(value)
+    }
+  }
 }
 
 // ScrapeUptime Instance uptime
 func (e *Exporter) ScrapeUptime() {
-	var uptime float64
-	for _, conn := range config.Cfgs {
-		if conn.db != nil {
-			err := conn.db.QueryRow("select sysdate-startup_time from v$instance").Scan(&uptime)
-			if err != nil {
-				return
-			}
-			e.uptime.WithLabelValues(conn.Database, conn.Instance).Set(uptime)
-		}
-	}
+  var uptime float64
+
+  config := e.config
+  db := config.db
+
+  if db != nil {
+    rows, err := db.Query("select sysdate-startup_time from v$instance")
+    if err != nil {
+      return
+    }
+
+    defer rows.Close()
+    rows.Next()
+    err = rows.Scan(&uptime)
+    if err == nil {
+      e.uptime.WithLabelValues(config.Database,config.Instance).Set(uptime)
+    }
+  }
 }
 
 // ScrapeSysstat collects activity metrics from the v$sysstat view.
@@ -669,26 +704,28 @@ func (e *Exporter) ScrapeSysstat() {
 	var (
 		rows *sql.Rows
 		err  error
-	)
-	for _, conn := range config.Cfgs {
-		if conn.db != nil {
-			rows, err = conn.db.Query(`SELECT name, value FROM v$sysstat
+  )
+
+  config := e.config
+  db := config.db
+
+  if db != nil {
+    rows, err = db.Query(`SELECT name, value FROM v$sysstat
                                     WHERE statistic# in (6,7,1084,1089)`)
-			if err != nil {
-				continue
-			}
-			defer rows.Close()
-			for rows.Next() {
-				var name string
-				var value float64
-				if err := rows.Scan(&name, &value); err != nil {
-					break
-				}
-				name = cleanName(name)
-				e.sysstat.WithLabelValues(conn.Database, conn.Instance, name).Set(value)
-			}
-		}
-	}
+    if err != nil {
+      return
+    }
+    defer rows.Close()
+    for rows.Next() {
+      var name string
+      var value float64
+      if err := rows.Scan(&name, &value); err != nil {
+        break
+      }
+      name = cleanName(name)
+      e.sysstat.WithLabelValues(config.Database,config.Instance,name).Set(value)
+    }
+  }
 }
 
 // ScrapeWaitTime collects wait time metrics from the v$waitclassmetric view.
@@ -696,27 +733,29 @@ func (e *Exporter) ScrapeWaitclass() {
 	var (
 		rows *sql.Rows
 		err  error
-	)
-	for _, conn := range config.Cfgs {
-		if conn.db != nil {
-			rows, err = conn.db.Query(`SELECT n.wait_class, round(m.time_waited/m.INTSIZE_CSEC,3)
-                                    FROM v$waitclassmetric  m, v$system_wait_class n
-                                    WHERE m.wait_class_id=n.wait_class_id and n.wait_class != 'Idle'`)
-			if err != nil {
-				continue
-			}
-			defer rows.Close()
-			for rows.Next() {
-				var name string
-				var value float64
-				if err := rows.Scan(&name, &value); err != nil {
-					break
-				}
-				name = cleanName(name)
-				e.waitclass.WithLabelValues(conn.Database, conn.Instance, name).Set(value)
-			}
-		}
-	}
+  )
+
+  config := e.config
+  db := config.db
+
+  if db != nil {
+    rows, err = db.Query(`SELECT n.wait_class, round(m.time_waited/m.INTSIZE_CSEC,3)
+                                  FROM v$waitclassmetric  m, v$system_wait_class n
+                                  WHERE m.wait_class_id=n.wait_class_id and n.wait_class != 'Idle'`)
+    if err != nil {
+      return
+    }
+    defer rows.Close()
+    for rows.Next() {
+      var name string
+      var value float64
+      if err := rows.Scan(&name, &value); err != nil {
+        break
+      }
+      name = cleanName(name)
+      e.waitclass.WithLabelValues(config.Database,config.Instance,name).Set(value)
+    }
+  }
 }
 
 // ScrapeSysmetrics collects session metrics from the v$sysmetrics view.
@@ -724,30 +763,32 @@ func (e *Exporter) ScrapeSysmetric() {
 	var (
 		rows *sql.Rows
 		err  error
-	)
-	for _, conn := range config.Cfgs {
-		//metric_id  metric_name
-		//2092    Physical Read Total IO Requests Per Sec
-		//2093    Physical Read Total Bytes Per Sec
-		//2100    Physical Write Total IO Requests Per Sec
-		//2124    Physical Write Total Bytes Per Sec
-		if conn.db != nil {
-			rows, err = conn.db.Query("select metric_name,value from v$sysmetric where metric_id in (2092,2093,2124,2100)")
-			if err != nil {
-				continue
-			}
-			defer rows.Close()
-			for rows.Next() {
-				var name string
-				var value float64
-				if err := rows.Scan(&name, &value); err != nil {
-					break
-				}
-				name = cleanName(name)
-				e.sysmetric.WithLabelValues(conn.Database, conn.Instance, name).Set(value)
-			}
-		}
-	}
+  )
+
+  config := e.config
+  db := config.db
+
+  //metric_id  metric_name
+  //2092    Physical Read Total IO Requests Per Sec
+  //2093    Physical Read Total Bytes Per Sec
+  //2100    Physical Write Total IO Requests Per Sec
+  //2124    Physical Write Total Bytes Per Sec
+  if db != nil {
+    rows, err = db.Query("select metric_name,value from v$sysmetric where metric_id in (2092,2093,2124,2100)")
+    if err != nil {
+      return
+    }
+    defer rows.Close()
+    for rows.Next() {
+      var name string
+      var value float64
+      if err := rows.Scan(&name, &value); err != nil {
+        break
+      }
+      name = cleanName(name)
+      e.sysmetric.WithLabelValues(config.Database,config.Instance,name).Set(value)
+    }
+  }
 }
 
 // ScrapeTablerows collects bytes from dba_tables view.
@@ -756,13 +797,14 @@ func (e *Exporter) ScrapeTablerows() {
 		rows *sql.Rows
 		err  error
 	)
-	for _, conn := range config.Cfgs {
-		if conn.db != nil {
-			rows, err = conn.db.Query(`select owner,table_name, tablespace_name, num_rows
+  config := e.config
+  db := config.db
+		if db != nil {
+			rows, err = db.Query(`select owner,table_name, tablespace_name, num_rows
                                  from dba_tables
                                  where owner not like '%SYS%' and num_rows is not null`)
 			if err != nil {
-				continue
+				return
 			}
 			defer rows.Close()
 			for rows.Next() {
@@ -774,10 +816,9 @@ func (e *Exporter) ScrapeTablerows() {
 					break
 				}
 				name = cleanName(name)
-				e.tablerows.WithLabelValues(conn.Database, conn.Instance, owner, name, space).Set(value)
+				e.tablerows.WithLabelValues(config.Database, config.Instance, owner, name, space).Set(value)
 			}
 		}
-	}
 }
 
 func (e *Exporter) ScrapeTablebytes() {
@@ -786,14 +827,15 @@ func (e *Exporter) ScrapeTablebytes() {
 		rows *sql.Rows
 		err  error
 	)
-	for _, conn := range config.Cfgs {
-		if conn.db != nil {
-			rows, err = conn.db.Query(`SELECT tab.owner, tab.table_name,  stab.bytes
+	config := e.config
+    db := config.db
+		if db != nil {
+			rows, err = db.Query(`SELECT tab.owner, tab.table_name,  stab.bytes
                                  FROM dba_tables  tab, dba_segments stab
                                  WHERE stab.owner = tab.owner AND stab.segment_name = tab.table_name
                                  AND tab.owner NOT LIKE '%SYS%'`)
 			if err != nil {
-				continue
+				return
 			}
 			defer rows.Close()
 			for rows.Next() {
@@ -804,10 +846,9 @@ func (e *Exporter) ScrapeTablebytes() {
 					break
 				}
 				name = cleanName(name)
-				e.tablebytes.WithLabelValues(conn.Database, conn.Instance, owner, name).Set(value)
+				e.tablebytes.WithLabelValues(config.Database, config.Instance, owner, name).Set(value)
 			}
 		}
-	}
 }
 
 // ScrapeTablebytes collects bytes from dba_indexes/dba_segments view.
@@ -816,15 +857,16 @@ func (e *Exporter) ScrapeIndexbytes() {
 		rows *sql.Rows
 		err  error
 	)
-	for _, conn := range config.Cfgs {
-		if conn.db != nil {
-			rows, err = conn.db.Query(`select table_owner,table_name, sum(bytes)
+    config := e.config
+    db := config.db
+		if db != nil {
+			rows, err = db.Query(`select table_owner,table_name, sum(bytes)
                                  from dba_indexes ind, dba_segments seg
                                  WHERE ind.owner=seg.owner and ind.index_name=seg.segment_name
                                  and table_owner NOT LIKE '%SYS%'
                                  group by table_owner,table_name`)
 			if err != nil {
-				continue
+				return
 			}
 			defer rows.Close()
 			for rows.Next() {
@@ -835,10 +877,9 @@ func (e *Exporter) ScrapeIndexbytes() {
 					break
 				}
 				name = cleanName(name)
-				e.indexbytes.WithLabelValues(conn.Database, conn.Instance, owner, name).Set(value)
+				e.indexbytes.WithLabelValues(config.Database, config.Instance, owner, name).Set(value)
 			}
 		}
-	}
 }
 
 // ScrapeLobbytes collects bytes from dba_lobs/dba_segments view.
@@ -847,15 +888,16 @@ func (e *Exporter) ScrapeLobbytes() {
 		rows *sql.Rows
 		err  error
 	)
-	for _, conn := range config.Cfgs {
-		if conn.db != nil {
-			rows, err = conn.db.Query(`select l.owner, l.table_name, sum(bytes)
+     config := e.config
+     db := config.db
+		if db != nil {
+			rows, err = db.Query(`select l.owner, l.table_name, sum(bytes)
                                  from dba_lobs l, dba_segments seg
                                  WHERE l.owner=seg.owner and l.table_name=seg.segment_name
                                  and l.owner NOT LIKE '%SYS%'
                                  group by l.owner,l.table_name`)
 			if err != nil {
-				continue
+				return
 			}
 			defer rows.Close()
 			for rows.Next() {
@@ -866,10 +908,9 @@ func (e *Exporter) ScrapeLobbytes() {
 					break
 				}
 				name = cleanName(name)
-				e.lobbytes.WithLabelValues(conn.Database, conn.Instance, owner, name).Set(value)
+				e.lobbytes.WithLabelValues(config.Database, config.Instance, owner, name).Set(value)
 			}
 		}
-	}
 }
 
 // Describe describes all the metrics exported by the Oracle exporter.
@@ -905,39 +946,8 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 
 // Connect the DBs and gather Databasename and Instancename
 func (e *Exporter) Connect() {
-	var dbname string
-	var inname string
-	var err error
-
-	for i, conf := range config.Cfgs {
-		// Close Connect from former scrape that not closed properly
-		if config.Cfgs[i].db != nil {
-			config.Cfgs[i].db.Close()
-			config.Cfgs[i].db = nil
-		}
-		if len(conf.Connection) > 0 {
-			config.Cfgs[i].db, err = sql.Open("oci8", conf.Connection)
-			if err == nil {
-				err = config.Cfgs[i].db.QueryRow("select db_unique_name,instance_name from v$database,v$instance").Scan(&dbname, &inname)
-				if err == nil {
-					if (len(conf.Database) == 0) || (len(conf.Instance) == 0) {
-						config.Cfgs[i].Database = dbname
-						config.Cfgs[i].Instance = inname
-					}
-					e.up.WithLabelValues(conf.Database, conf.Instance).Set(1)
-				} else {
-					config.Cfgs[i].db.Close()
-					e.up.WithLabelValues(conf.Database, conf.Instance).Set(0)
-					log.Errorln("Error connecting to database:", err)
-					//log.Infoln("Connect OK, Inital query failed: ", conf.Connection)
-				}
-			}
-		} else {
-			//log.Infoln("Dummy Connection: ", conf.Database)
-			e.up.WithLabelValues(conf.Database, conf.Instance).Set(0)
-		}
-	}
-	e.session.Reset()
+  e.up.Reset()
+  e.session.Reset()
 	e.sysstat.Reset()
 	e.waitclass.Reset()
 	e.sysmetric.Reset()
@@ -961,33 +971,50 @@ func (e *Exporter) Connect() {
 	for _, metric := range e.custom {
 		metric.Reset()
 	}
-}
+  config := &e.config
+
+  // orig: dsn := fmt.Sprintf("%s/%s@%s", config.User, config.Password, config.Connection)
+  dsn := config.Connection
+  db , err := sql.Open("oci8", dsn)
+  config.db = db
+
+  if err != nil {
+    log.Infoln(err)
+    e.up.WithLabelValues(config.Database,config.Instance).Set(0)
+
+    if db != nil {
+      db.Close()
+      config.db = nil
+    }
+
+    return
+  }}
 
 // Close Connections
 func (e *Exporter) Close() {
-	for _, conn := range config.Cfgs {
-		if conn.db != nil {
-			conn.db.Close()
-			conn.db = nil
-		}
-	}
+  if e.config.db != nil {
+    e.config.db.Close()
+    e.config.db = nil
+  }
 }
 
 // Collect implements prometheus.Collector.
 func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	var err error
 
-	e.totalScrapes.Inc()
-	defer func(begun time.Time) {
-		e.duration.Set(time.Since(begun).Seconds())
-		if err == nil {
-			e.error.Set(0)
-		} else {
-			e.error.Set(1)
-		}
-	}(time.Now())
+  defer func(begun time.Time) {
+    e.duration.WithLabelValues(e.config.Database,e.config.Instance).Set(time.Since(begun).Seconds())
+    if err == nil {
+      e.error.WithLabelValues(e.config.Database,e.config.Instance).Set(0)
+    } else {
+      e.error.WithLabelValues(e.config.Database,e.config.Instance).Set(1)
+    }
+  }(time.Now())
 
-	e.Connect()
+  e.Connect()
+  e.totalScrapes.WithLabelValues(e.config.Database,e.config.Instance).Inc()
+  defer e.Close()
+
 	e.up.Collect(ch)
 
 	if e.vRecovery || *pRecovery {
@@ -1064,15 +1091,34 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 		e.lobbytes.Collect(ch)
 	}
 
-	ch <- e.duration
-	ch <- e.totalScrapes
-	ch <- e.error
-	e.scrapeErrors.Collect(ch)
+	//ch <- e.duration
+	//ch <- e.totalScrapes
+	//ch <- e.error
+  e.duration.Collect(ch)
+  e.totalScrapes.Collect(ch)
+  e.error.Collect(ch)
+  e.scrapeErrors.Collect(ch)
 
-	e.Close()
+  //e.Close()
 }
 
 func (e *Exporter) Handler(w http.ResponseWriter, r *http.Request) {
+  promhttp.Handler().ServeHTTP(w, r)
+}
+
+func ScrapeHandler(w http.ResponseWriter, r *http.Request) {
+  
+
+
+  target := r.URL.Query().Get("target")
+
+  log.Infoln("ScrapeHandler for " + target)
+  for _, conn := range config.Cfgs {
+     log.Infoln("check Database" + conn.Database)
+     if conn.Database == target {
+        if handlers[target] == nil {
+          registry := prometheus.NewRegistry()
+          e := NewExporter()
 	e.lastIp = ""
 	ip, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err == nil {
@@ -1098,21 +1144,40 @@ func (e *Exporter) Handler(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("recovery") == "true" {
 		e.vRecovery = true
 	}
-	promhttp.Handler().ServeHTTP(w, r)
+
+          e.config = conn
+          registry.MustRegister(e)
+          handlers[target] = promhttp.HandlerFor(registry, promhttp.HandlerOpts{})
+        }
+
+     }
+  }
+
+  // Delegate http serving to Prometheus client library, which will call collector.Collect.
+  h := handlers[target]
+
+  if h == nil {
+    http.Error(w, fmt.Sprintf("Target not found %v", target), 400)
+    return
+  } 
+
+  h.ServeHTTP(w, r)
 }
+
 
 func main() {
 	flag.Parse()
 
-	manageService()
+	//manageService()
 	
 	log.Infoln("Starting Prometheus Oracle exporter " + Version)
+    metricsExporter = NewExporter()
 	if loadConfig() {
 		log.Infoln("Config loaded: ", *configFile)
 		exporter := NewExporter()
 		prometheus.MustRegister(exporter)
 
-		http.HandleFunc(*metricPath, exporter.Handler)
+		http.HandleFunc(*metricPath, ScrapeHandler)
 
 		http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { w.Write(landingPage) })
 
