@@ -96,32 +96,32 @@ var (
 // NewExporter returns a new Oracle DB exporter for the provided DSN.
 func NewExporter() *Exporter {
   e := Exporter{
-    duration: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-      Namespace: namespace,
-      Subsystem: exporter,
-      Name:      "last_scrape_duration_seconds",
-      Help:      "Duration of the last scrape of metrics from Oracle DB.",
-    }, []string{"database","dbinstance"}),
-    totalScrapes: prometheus.NewCounterVec(prometheus.CounterOpts{
-      Namespace: namespace,
-      Subsystem: exporter,
-      Name:      "scrapes_total",
-      Help:      "Total number of times Oracle DB was scraped for metrics.",
-    }, []string{"database","dbinstance"}),
-    scrapeErrors: prometheus.NewCounterVec(prometheus.CounterOpts{
-      Namespace: namespace,
-      Subsystem: exporter,
-      Name:      "scrape_errors_total",
-      Help:      "Total number of times an error occured scraping a Oracle database.",
-    }, []string{"database","dbinstance"}),
-    error: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-      Namespace: namespace,
-      Subsystem: exporter,
-      Name:      "last_scrape_error",
-      Help:      "Whether the last scrape of metrics from Oracle DB resulted in an error (1 for error, 0 for success).",
-    },[]string{"database","dbinstance"}),
-    sysmetric: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-      Namespace: namespace,
+    	  duration: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+    	    Namespace: namespace,
+    	    Subsystem: exporter,
+    	    Name:      "last_scrape_duration_seconds",
+    	    Help:      "Duration of the last scrape of metrics from Oracle DB.",
+    	  }, []string{}),
+    	  totalScrapes: prometheus.NewCounterVec(prometheus.CounterOpts{
+    	    Namespace: namespace,
+    	    Subsystem: exporter,
+    	    Name:      "scrapes_total",
+    	    Help:      "Total number of times Oracle DB was scraped for metrics.",
+    	  }, []string{"database","dbinstance"}),
+    	  scrapeErrors: prometheus.NewCounterVec(prometheus.CounterOpts{
+    	    Namespace: namespace,
+    	    Subsystem: exporter,
+    	    Name:      "scrape_errors_total",
+    	    Help:      "Total number of times an error occured scraping a Oracle database.",
+    	  }, []string{"database","dbinstance"}),
+    	  error: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+    	    Namespace: namespace,
+    	    Subsystem: exporter,
+    	    Name:      "last_scrape_error",
+    	    Help:      "Whether the last scrape of metrics from Oracle DB resulted in an error (1 for error, 0 for success).",
+    	  },[]string{"database","dbinstance"}),
+    	  sysmetric: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+    	    Namespace: namespace,
                Name:      "sysmetric",
                Help:      "Gauge metric with read/write pysical IOPs/bytes (v$sysmetric).",
           }, []string{"database", "dbinstance", "type"}),
@@ -707,9 +707,7 @@ func (e *Exporter) ScrapeUptime() {
   for _, config := range e.configs {
 	db := config.db
 
-    if db == nil {
-	    log.Errorln("db for config" + config.Database + "/"+ config.Instance + " nil")
-	} else {
+    if db != nil {
       rows, err := db.Query("select sysdate-startup_time from v$instance")
       if err != nil {
             fmt.Println(err)
@@ -1017,24 +1015,37 @@ func (e *Exporter) Connect() {
      }
     for i, config := range e.configs {
 
-     // orig: dsn := fmt.Sprintf("%s/%s@%s", config.User, config.Password, config.Connection)
      log.Infoln(fmt.Sprintf("open dbConnection %d ", i) + "for "+ config.Database+"/"+config.Instance)
      db , err := sql.Open("oci8", config.Connection)
    
-     if err != nil {
-       log.Infoln(err)
-       e.up.WithLabelValues(config.Database,config.Instance).Set(0)
-   
-       if db != nil {
-         db.Close()
-         config.db = nil
-          log.Infoln("closed dbConnection on error for "+ config.Database+"/"+config.Instance)
-   
-        }
-
-
-       return
+	 if err != nil {
+		log.Error("db for config" + config.Database + "/"+ config.Instance + ":")
+		fmt.Println(err)
+		e.up.WithLabelValues(config.Database,config.Instance).Set(0)
+		return
 	 }
+	 // test connection
+	 if db != nil {
+		rows, err := db.Query(`select 1 from dual`)
+		if err != nil {
+   		  log.Error("Db error for config " + config.Database + "/"+ config.Instance + ":")
+		  fmt.Println(err)
+
+		  e.up.WithLabelValues(config.Database,config.Instance).Set(0)
+  
+		  if db != nil {
+			db.Close()
+			config.db = nil
+			 log.Infoln("closed dbConnection on error for "+ config.Database+"/"+config.Instance)
+	  
+		   }
+		  continue
+		}
+  
+		rows.Close()
+  
+	 }
+
      // only assigned working db connection
      config.db = db
 	 // db is up:
@@ -1057,18 +1068,9 @@ func (e *Exporter) Close() {
 
 // Collect implements prometheus.Collector.
 func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
-     var err error
-
 
   defer func(begun time.Time) {
-	for _, config := range e.configs {
-		e.duration.WithLabelValues(config.Database,config.Instance).Set(time.Since(begun).Seconds())
-        if err == nil {
-          e.error.WithLabelValues(config.Database,config.Instance).Set(0)
-        } else {
-          e.error.WithLabelValues(config.Database,config.Instance).Set(1)
-		}
-	}
+		e.duration.WithLabelValues().Set(time.Since(begun).Seconds())
   }(time.Now())
 
   e.Connect()
@@ -1077,7 +1079,7 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
   }	
   defer e.Close()
 
-	 //e.up.Collect(ch)
+	 e.up.Collect(ch)
 
      if e.vRecovery || *pRecovery {
           e.ScrapeRecovery()
@@ -1153,15 +1155,11 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
           e.lobbytes.Collect(ch)
      }
 
-     //ch <- e.duration
-     //ch <- e.totalScrapes
-     //ch <- e.error
-  e.duration.Collect(ch)
-  e.totalScrapes.Collect(ch)
-  e.error.Collect(ch)
-  e.scrapeErrors.Collect(ch)
+	 e.duration.Collect(ch)
+	 e.totalScrapes.Collect(ch)
+	 e.error.Collect(ch)
+	 e.scrapeErrors.Collect(ch)
 
-  //e.Close()
 }
 
 func (e *Exporter) Handler(w http.ResponseWriter, r *http.Request) {
