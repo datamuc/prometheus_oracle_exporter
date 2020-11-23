@@ -80,6 +80,7 @@ var (
                           <body>
                             <h1>Prometheus Oracle exporter</h1><p>
                             <a href='` + *metricPath + `'>Metrics</a></p>
+                            <a href='` + *metricPath + `?target=database name'>Metrics only one database (all instances will be scraped)</a></p>
                             <a href='` + *metricPath + `?tablerows=true'>Metrics with tablerows</a></p>
                             <a href='` + *metricPath + `?tablebytes=true'>Metrics with tablebytes</a></p>
                             <a href='` + *metricPath + `?indexbytes=true'>Metrics with indexbytes</a></p>
