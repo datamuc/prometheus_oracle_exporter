@@ -231,6 +231,7 @@ func NewExporter() *Exporter {
      // add custom metrics
      for _, conn := range config.Cfgs {
           for _, query := range conn.Queries {
+               log.Debug("Add Query " + query.Name)
                labels := []string{}
                for _, label := range query.Labels {
                     labels = append(labels, cleanName(label))
@@ -267,6 +268,7 @@ func (e *Exporter) ScrapeCustomQueries(pNoRownum bool) {
 
          if db != nil {
                for _, query := range config.Queries {
+                    log.Debug("execute "+ query.Name)
                     rows, err = db.Query(query.Sql)
                     if err != nil {
                          log.Error("Error in Query '" +  query.Sql + "': ")
@@ -1069,10 +1071,7 @@ func (e *Exporter) Close() {
 
 // Collect implements prometheus.Collector.
 func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
-
-  defer func(begun time.Time) {
-		e.duration.WithLabelValues().Set(time.Since(begun).Seconds())
-  }(time.Now())
+  begun := time.Now()
 
   e.Connect()
   for _, config := range e.configs {
@@ -1156,6 +1155,7 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
           e.lobbytes.Collect(ch)
      }
 
+     e.duration.WithLabelValues().Set(time.Since(begun).Seconds())
 	 e.duration.Collect(ch)
 	 e.totalScrapes.Collect(ch)
 	 e.error.Collect(ch)
@@ -1220,11 +1220,7 @@ func ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 		  cp :=config.Cfgs[i]
 		  c = append(c,&cp)
         }
-	}
-	log.Infoln(fmt.Sprintf("length c:  %d",len(c)))
-	if len(c) > 0 {
-		log.Infoln(fmt.Sprintf("last c:  %s",c[len(c)-1].Database))
-	}
+     }
 	e.configs = c
 
 	e.lastIp = ""
