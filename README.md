@@ -247,5 +247,5 @@ set CGO_CFLAGS=-I D:/oracle_instantclient_19_8/sdk/include
 
 
 ```
-go get github.com/ulikl/prometheus_oracle_exporter
+go install github.com/ulikl/prometheus_oracle_exporter@master
 ```
