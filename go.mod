@@ -1,4 +1,4 @@
-module data.rbfh.de/git/prometheus_oracle_exporter
+module github.com/ulikl/prometheus_oracle_exporter
 
 go 1.17
 
